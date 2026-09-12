@@ -63,6 +63,9 @@ class ConfigManager:
         self.show_border_when_not_working: bool = self.settings.value(
             "show_border_when_not_working", True, type=bool
         )
+        self.timer_enabled: bool = self.settings.value(
+            "timer_enabled", True, type=bool
+        )
 
         # Load hotkeys
         self.add_program_hotkey: str = self.settings.value(
@@ -164,6 +167,25 @@ class ConfigManager:
             "Options/show_border_when_not_working", self.show_border_when_not_working
         )
         return self.show_border_when_not_working
+
+    def set_timer_enabled(self, enabled: bool) -> None:
+        """Set whether the timer is enabled (counting) or paused.
+
+        Args:
+            enabled: True to enable counting, False to pause
+        """
+        self.timer_enabled = enabled
+        self.settings.setValue("Options/timer_enabled", enabled)
+
+    def toggle_timer_enabled(self) -> bool:
+        """Toggle the timer enabled/paused setting.
+
+        Returns:
+            The new state (True = enabled/counting, False = paused)
+        """
+        self.timer_enabled = not self.timer_enabled
+        self.settings.setValue("Options/timer_enabled", self.timer_enabled)
+        return self.timer_enabled
 
     def add_tracked_program(self, exe_path: str) -> None:
         """Add a program to the tracked programs list.

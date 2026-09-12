@@ -1,4 +1,4 @@
-# WORK-WORK
+# DevOTime
 
 A Windows-only productivity tool for accurately tracking time spent working in specific programs with idle detection and customizable alerts.
 
@@ -49,6 +49,7 @@ The application displays as a compact timer window that stays on top of other wi
 ### Menu Options
 
 - **Add/Remove Programs**: Manage which programs are tracked
+- **Pause Timer**: Pause/resume time tracking when you don't want to use it
 - **Timeout Settings**: Configure idle timeout
 - **Goal Time**: Set daily work goals with HH:MM:SS format
 - **Hotkey Configuration**: Customize global shortcuts

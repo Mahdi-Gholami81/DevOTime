@@ -37,6 +37,11 @@ ALERT_PATH = ":/alert_sound"
 FONT_PATH = ":/digital_font"
 ICON_PATH = ":/timer_icon"
 
+APP_NAME = "DevOTime"
+TITLE_PAUSED = f"{APP_NAME} - PAUSED"
+TITLE_ACTIVE = f"{APP_NAME} - KEEP WORKING"
+TITLE_INACTIVE = f"{APP_NAME} - BACK TO WORK"
+
 
 class ZeroPaddedSpinBox(QSpinBox):
     """A QSpinBox that displays values zero-padded to two digits."""
@@ -406,6 +411,7 @@ class MainWindow(QMainWindow):
         The window initially shows inactive state until a tracked program is detected.
         """
         super().__init__()
+        self._cleaned_up = False
         self.setWindowFlags(
             Qt.WindowType.WindowCloseButtonHint | Qt.WindowType.WindowStaysOnTopHint
         )
@@ -456,7 +462,7 @@ class MainWindow(QMainWindow):
         self.hotkeys.register(self.config.add_program_hotkey, self.add_program)
         self.hotkeys.register(self.config.remove_program_hotkey, self.remove_program)
 
-        self.setWindowTitle("WORK WORK")
+        self.setWindowTitle(APP_NAME)
         self.setWindowIcon(QIcon(ICON_PATH))
         self.setObjectName("MainWindow")
 
@@ -630,7 +636,11 @@ class MainWindow(QMainWindow):
 
     def on_update(self) -> None:
         """UI refresh and bookkeeping"""
-        should_count = self.foreground_is_tracked and not self.is_idle()
+        should_count = (
+            self.config.timer_enabled
+            and self.foreground_is_tracked
+            and not self.is_idle()
+        )
 
         # Handle state changes
         if should_count and not self.active_timer.isValid():  # Just resumed
@@ -658,9 +668,18 @@ class MainWindow(QMainWindow):
             self.show_alert("Work goal reached!", 3)
 
         # Update UI
-        if not should_count:
-            if self.windowTitle() != "WORK WORK":
-                self.setWindowTitle("BACK TO WORK")
+        if not self.config.timer_enabled:
+            if self.windowTitle() != TITLE_PAUSED:
+                self.setWindowTitle(TITLE_PAUSED)
+            # Show border while paused (same as not-working state)
+            if (
+                self.config.show_border_when_not_working
+                and not self.border_windows.isVisible()
+            ):
+                self.border_windows.show()
+        elif not should_count:
+            if self.windowTitle() != TITLE_INACTIVE:
+                self.setWindowTitle(TITLE_INACTIVE)
             # Show border when not tracking time
             if (
                 self.config.show_border_when_not_working
@@ -668,7 +687,7 @@ class MainWindow(QMainWindow):
             ):
                 self.border_windows.show()
         else:
-            self.setWindowTitle("KEEP WORKING")
+            self.setWindowTitle(TITLE_ACTIVE)
             # Hide border when tracking time
             if self.border_windows.isVisible():
                 self.border_windows.hide()
@@ -715,16 +734,14 @@ class MainWindow(QMainWindow):
             value: The exception instance
             traceback: The traceback object
         """
-        # Save current session to history before exiting
-        self.save_current_session()
-
-        # Hide border windows to prevent them from staying visible
-        if self.border_windows.isVisible():
-            self.border_windows.hide()
-
-        self.save_data()
-        self.hotkeys.unregister_all()
         print(exception_type, value, traceback)
+        self._cleanup_for_exit()
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+        except Exception:
+            pass
         sys.exit(0)
 
     def get_active_exe(self) -> str | None:
@@ -749,7 +766,11 @@ class MainWindow(QMainWindow):
         formats the elapsed time for display. Handles time hiding
         and clamping to maximum displayable value.
         """
-        if self.foreground_is_tracked and not self.is_idle():
+        if (
+            self.config.timer_enabled
+            and self.foreground_is_tracked
+            and not self.is_idle()
+        ):
             self.setStyleSheet(
                 f"QMainWindow#MainWindow {{ background-color: {self.active_color}; }}"
             )
@@ -830,6 +851,11 @@ class MainWindow(QMainWindow):
         )
 
         # Toggleable options with checkmarks
+        toggle_pause = self.menu.addAction("Pause timer")
+        toggle_pause.setCheckable(True)
+        toggle_pause.setChecked(not self.config.timer_enabled)
+        toggle_pause.triggered.connect(self.toggle_pause_timer)
+
         toggle_sound = self.menu.addAction("Idle indicator sound")
         toggle_sound.setCheckable(True)
         toggle_sound.setChecked(self.config.play_sound_on_idle)
@@ -862,6 +888,38 @@ class MainWindow(QMainWindow):
         self.menu.addAction("Reset time", self.reset_time)
         self.menu.addAction("Change current time", self.change_current_time)
 
+    def toggle_pause_timer(self) -> None:
+        """Pause or resume the timer.
+
+        When paused, time is never counted even if a tracked program is
+        focused. The red border / inactive state is shown while paused.
+        The setting is persisted so it survives restarts.
+        """
+        is_enabled = self.config.toggle_timer_enabled()
+
+        if is_enabled:
+            self.show_message("resumed")
+            # Hide border immediately if we are now actively tracking
+            if (
+                self.foreground_is_tracked
+                and not self.is_idle()
+                and self.border_windows.isVisible()
+            ):
+                self.border_windows.hide()
+        else:
+            # Flush any in-progress active time so it is not lost
+            if self.active_timer.isValid():
+                self.elapsed_seconds += self.active_timer.nsecsElapsed() / 1e9
+                self.active_timer.invalidate()
+            self.show_message("paused")
+            if (
+                self.config.show_border_when_not_working
+                and not self.border_windows.isVisible()
+            ):
+                self.border_windows.show()
+
+        self.update_time_display()
+
     def toggle_border_indicator(self) -> None:
         """Toggle the display of border indicators.
 
@@ -874,7 +932,11 @@ class MainWindow(QMainWindow):
         if is_enabled:
             self.show_message("brdr on")
             # If not tracking time, show border immediately
-            if not self.foreground_is_tracked or self.is_idle():
+            if (
+                not self.config.timer_enabled
+                or not self.foreground_is_tracked
+                or self.is_idle()
+            ):
                 self.border_windows.show()
         else:
             self.show_message("brdr off")
@@ -1292,31 +1354,107 @@ class MainWindow(QMainWindow):
 
         return super().eventFilter(source, event)
 
+    def _cleanup_for_exit(self) -> None:
+        """Idempotent cleanup so the process and red border never linger.
+
+        Stops all timers, flushes in-progress time, destroys border windows
+        (not just hides them), unregisters global hotkeys and syncs settings.
+        Safe to call from closeEvent, aboutToQuit and exception handlers.
+        """
+        if getattr(self, "_cleaned_up", False):
+            return
+        self._cleaned_up = True
+
+        try:
+            for timer in (
+                getattr(self, "tick", None),
+                getattr(self, "active_window_timer", None),
+                getattr(self, "save_timer", None),
+                getattr(self, "message_timer", None),
+            ):
+                try:
+                    if timer is not None:
+                        timer.stop()
+                except Exception:
+                    pass
+
+            # Flush in-progress active time so it is not lost
+            try:
+                if self.active_timer.isValid():
+                    self.elapsed_seconds += self.active_timer.nsecsElapsed() / 1e9
+                    self.active_timer.invalidate()
+            except Exception:
+                pass
+
+            try:
+                self.save_current_session()
+            except Exception:
+                pass
+            try:
+                self.save_data()
+            except Exception:
+                pass
+            try:
+                self.config.settings.sync()
+            except Exception:
+                pass
+        finally:
+            try:
+                if getattr(self, "border_windows", None) is not None:
+                    self.border_windows.destroy()
+            except Exception:
+                pass
+            try:
+                if getattr(self, "hotkeys", None) is not None:
+                    self.hotkeys.unregister_all()
+            except Exception:
+                pass
+
     def closeEvent(self, event: QEvent) -> None:
         """Handle window close events.
 
         Performs cleanup operations when the application is closing:
         - Saves current session to history
-        - Hides border windows to prevent them from staying visible
-        - Cleans up COM event context
-        - Unhooks all Windows event hooks
+        - Destroys border windows so none stay visible
+        - Unhooks all global hotkeys
         - Saves current application state to settings
+        - Quits the QApplication so the process actually exits
         """
-        # Save current session to history before closing
-        self.save_current_session()
+        self._cleanup_for_exit()
+        try:
+            event.accept()
+        except Exception:
+            pass
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+        except Exception:
+            pass
 
-        # Hide border windows first to prevent them from staying visible
-        if self.border_windows.isVisible():
-            self.border_windows.hide()
 
-        self.save_data()
+def main() -> int:
+    app = QApplication([])
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
+    app.setOrganizationName(APP_NAME)
+    app.setWindowIcon(QIcon(ICON_PATH))
+    # Ensure the process exits when the last window closes. Border windows
+    # are Tool windows that must be destroyed on exit (see _cleanup_for_exit),
+    # otherwise they keep the event loop alive.
+    app.setQuitOnLastWindowClosed(True)
 
-        self.hotkeys.unregister_all()
+    window = MainWindow()
+    sys.excepthook = window.handle_exception
+    # Safety net: if the event loop quits for any reason, destroy borders
+    # and unregister hotkeys even if closeEvent was bypassed.
+    try:
+        app.aboutToQuit.connect(window._cleanup_for_exit)
+    except Exception:
+        pass
+    window.show()
+    return app.exec()
 
 
-app: QApplication = QApplication([])
-window: MainWindow = MainWindow()
-sys.excepthook = window.handle_exception
-window.show()
-
-app.exec()
+if __name__ == "__main__":
+    raise SystemExit(main())

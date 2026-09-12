@@ -20,7 +20,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='WORK-WORK',
+    name='DevOTime',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -27,7 +27,9 @@ class BorderWindow(QWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.show()
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        # NOTE: caller decides when to show(); do not auto-show here so
+        # hidden/destroyed state is fully controlled by BorderWindows.
 
     def paintEvent(self, a0: QEvent) -> None:
         event = a0
@@ -68,6 +70,23 @@ class BorderWindows:
         for border_window in self.border_windows:
             border_window.show()
         self.is_visible = True
+
+    def destroy(self) -> None:
+        """Permanently close and delete all border windows.
+
+        Must be called on application exit. hide() alone leaves top-level
+        widgets alive, which keeps the QApplication event loop running and
+        can leave a red border on screen if quit is interrupted.
+        """
+        for border_window in self.border_windows:
+            try:
+                border_window.hide()
+                border_window.close()
+                border_window.deleteLater()
+            except Exception:
+                pass
+        self.border_windows = []
+        self.is_visible = False
 
     def isVisible(self) -> bool:
         return self.is_visible
