@@ -66,6 +66,17 @@ class ConfigManager:
         self.timer_enabled: bool = self.settings.value(
             "timer_enabled", True, type=bool
         )
+        self.close_to_tray: bool = self.settings.value(
+            "close_to_tray", True, type=bool
+        )
+        self.tray_hint_shown: bool = self.settings.value(
+            "tray_hint_shown", False, type=bool
+        )
+
+        # Dock (edge-collapse) state
+        self.docked: bool = self.settings.value("docked", False, type=bool)
+        dock_edge = self.settings.value("dock_edge", "right")
+        self.dock_edge: str = dock_edge if dock_edge in ("left", "right") else "right"
 
         # Load hotkeys
         self.add_program_hotkey: str = self.settings.value(
@@ -186,6 +197,33 @@ class ConfigManager:
         self.timer_enabled = not self.timer_enabled
         self.settings.setValue("Options/timer_enabled", self.timer_enabled)
         return self.timer_enabled
+
+    def toggle_close_to_tray(self) -> bool:
+        """Toggle the close-to-tray setting.
+
+        Returns:
+            The new state of the setting
+        """
+        self.close_to_tray = not self.close_to_tray
+        self.settings.setValue("Options/close_to_tray", self.close_to_tray)
+        return self.close_to_tray
+
+    def set_tray_hint_shown(self) -> None:
+        """Record that the tray balloon hint has been shown once."""
+        self.tray_hint_shown = True
+        self.settings.setValue("Options/tray_hint_shown", True)
+
+    def set_dock_state(self, docked: bool, edge: str) -> None:
+        """Persist the docked state and which screen edge is used.
+
+        Args:
+            docked: Whether the window is collapsed to the screen edge
+            edge: "left" or "right"
+        """
+        self.docked = docked
+        self.dock_edge = edge if edge in ("left", "right") else "right"
+        self.settings.setValue("Options/docked", docked)
+        self.settings.setValue("Options/dock_edge", self.dock_edge)
 
     def add_tracked_program(self, exe_path: str) -> None:
         """Add a program to the tracked programs list.

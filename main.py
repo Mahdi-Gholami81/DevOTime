@@ -6,12 +6,23 @@ from typing import Type
 import psutil
 import win32gui
 import win32process
-from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer, QElapsedTimer, QUrl
+from PyQt6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QEasingCurve,
+    QElapsedTimer,
+    QRect,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    QTimer,
+    QUrl,
+)
 from PyQt6.QtGui import QFont, QFontDatabase, QIcon, QKeyEvent, QGuiApplication
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QDialog,
     QHBoxLayout,
     QInputDialog,
@@ -29,6 +40,7 @@ from PyQt6.QtWidgets import (
 from border_windows import BorderWindows
 from config_manager import ConfigManager
 from hotkey_manager import HotkeyManager
+from tray_manager import TrayManager
 import resources_rc
 
 
@@ -38,9 +50,7 @@ FONT_PATH = ":/digital_font"
 ICON_PATH = ":/timer_icon"
 
 APP_NAME = "DevOTime"
-TITLE_PAUSED = f"{APP_NAME} - PAUSED"
-TITLE_ACTIVE = f"{APP_NAME} - KEEP WORKING"
-TITLE_INACTIVE = f"{APP_NAME} - BACK TO WORK"
+DOCK_STRIP_WIDTH = 18  # Visible sliver width when collapsed to a screen edge
 
 
 class ZeroPaddedSpinBox(QSpinBox):
@@ -423,8 +433,9 @@ class MainWindow(QMainWindow):
         if self.config.previous_time > 0:
             self.config.add_time_to_history(self.config.previous_time)
 
-        self.window_size: QSize = QSize(220, 39)
+        self.window_size: QSize = QSize(340, 42)
         self.setFixedSize(self.window_size)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         # Geometry
         geometry = self.config.load_window_geometry()
@@ -451,16 +462,39 @@ class MainWindow(QMainWindow):
         self.wait_to_add_program: bool = False
         self.wait_to_remove_program: bool = False
 
+        # Dock (edge-collapse) state
+        self._docked: bool = False
+        self._dock_edge: str = "right"
+        self._docked_animating: bool = False
+        self._dock_anim: QPropertyAnimation | None = None
+        self._pre_dock_pos: QPoint | None = None
+
+        # Chrome (taskbar title / tray tooltip) cache
+        self._chrome_text: str = ""
+        self._counting: bool = False
+        self.tray: TrayManager | None = None
+
         # Message display system
         self.showing_message: bool = False
         self.message_timer: QTimer = QTimer(self)
         self.message_timer.setSingleShot(True)
         self.message_timer.timeout.connect(self.clear_message)
 
-        # Register hotkeys
+        # Register hotkeys (non-fatal: another app or instance may hold them)
         self.hotkeys = HotkeyManager()
-        self.hotkeys.register(self.config.add_program_hotkey, self.add_program)
-        self.hotkeys.register(self.config.remove_program_hotkey, self.remove_program)
+        self._hotkey_errors: list[str] = []
+        try:
+            self.hotkeys.register(self.config.add_program_hotkey, self.add_program)
+        except RuntimeError:
+            self._hotkey_errors.append(self.config.add_program_hotkey)
+            print(f"Could not register hotkey {self.config.add_program_hotkey}")
+        try:
+            self.hotkeys.register(
+                self.config.remove_program_hotkey, self.remove_program
+            )
+        except RuntimeError:
+            self._hotkey_errors.append(self.config.remove_program_hotkey)
+            print(f"Could not register hotkey {self.config.remove_program_hotkey}")
 
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(QIcon(ICON_PATH))
@@ -493,7 +527,7 @@ class MainWindow(QMainWindow):
         font_families: list[str] = QFontDatabase.applicationFontFamilies(
             digital_font_id
         )
-        self.label.setFont(QFont(font_families[0], 24))
+        self.label.setFont(QFont(font_families[0], 22))
         self.label.setStyleSheet("color: black;")
 
         self.menu: QMenu = QMenu()
@@ -503,6 +537,11 @@ class MainWindow(QMainWindow):
         # Detect if system is in dark mode
         app = QGuiApplication.instance()
         is_dark_mode = app.styleHints().colorScheme() == Qt.ColorScheme.Dark
+        self._tray_text_colors = (
+            {"counting": "#B0FFFF", "inactive": "#F07070", "paused": "#E8C55A"}
+            if is_dark_mode
+            else {"counting": "#007A7A", "inactive": "#C03030", "paused": "#8A6D00"}
+        )
 
         if is_dark_mode:
             # Dark theme: black background, white text
@@ -555,54 +594,67 @@ class MainWindow(QMainWindow):
         """
         )
         menu_button: QPushButton = QPushButton("MENU")
+        menu_button.setObjectName("MenuButton")
+        menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
         menu_button.setStyleSheet(
-            f"""QPushButton {{
-                background-color: white;
-                padding: 2px 4px;
-                border: 1px solid black;
+            f"""QPushButton#MenuButton {{
+                background-color: rgba(255, 255, 255, 170);
+                padding: 2px 8px;
+                border: 1px solid rgba(0, 0, 0, 140);
+                border-radius: 6px;
                 font-size: 11px;
                 color: black;
                 margin: 0;
             }}
 
-            QPushButton:focus {{
+            QPushButton#MenuButton:hover {{
+                background-color: rgba(255, 255, 255, 255);
+            }}
+
+            QPushButton#MenuButton:focus {{
                 outline: 1px solid black;
             }}
 
-            QPushButton::menu-indicator {{
+            QPushButton#MenuButton::menu-indicator {{
                 width: 0;
             }}
             """
         )
         menu_button.setMenu(self.menu)
 
-        checkbox: QCheckBox = QCheckBox("")
-        checkbox.setCheckable(True)
-        checkbox.clicked.connect(self.checkbox_was_toggled)
-        checkbox.setChecked(self.hide_time)
-        checkbox.setToolTip("Toggle time visibility")
-        checkbox.setStyleSheet(
-            """
-            QCheckBox::indicator {
-                background-color: white;
-                border: 1px solid black;
-            }
-            QCheckBox::indicator:checked {
-                background-color: black;
-            }
-            QCheckBox:focus {
-                outline: 1px solid black;
-            }
-        """
+        self.dock_btn: QPushButton = self._make_tool_button("❯", "Hide to screen edge")
+        self.dock_btn.clicked.connect(self.on_dock_clicked)
+
+        self.pause_btn: QPushButton = self._make_tool_button(
+            "⏸", "Pause / resume timer"
         )
+        self.pause_btn.setCheckable(True)
+        self.pause_btn.setChecked(not self.config.timer_enabled)
+        self.pause_btn.clicked.connect(self.toggle_pause_timer)
+
+        self.add_btn: QPushButton = self._make_tool_button(
+            "+", "Add program: click, then click/target the program window"
+        )
+        self.add_btn.clicked.connect(self.add_program_mouse)
+
+        self.hide_btn: QPushButton = self._make_tool_button("◉", "Hide / show time")
+        self.hide_btn.setCheckable(True)
+        self.hide_btn.setChecked(self.hide_time)
+        self.hide_btn.toggled.connect(self.hide_time_toggled)
 
         layout: QHBoxLayout = QHBoxLayout()
-        layout.setAlignment(Qt.AlignmentFlag.AlignRight)
+        layout.setContentsMargins(4, 3, 4, 3)
+        layout.setSpacing(3)
+        layout.addWidget(self.dock_btn)
+        layout.addWidget(self.pause_btn)
+        layout.addWidget(self.add_btn)
+        layout.addStretch(1)
         layout.addWidget(self.label)
         layout.addWidget(menu_button)
-        layout.addWidget(checkbox)
+        layout.addWidget(self.hide_btn)
 
         self.container: QWidget = QWidget()
+        self.container.setObjectName("Container")
         self.container.installEventFilter(self)
         self.container.setLayout(layout)
 
@@ -612,7 +664,77 @@ class MainWindow(QMainWindow):
         self.sound_effect = QSoundEffect()
         self.sound_effect.setSource(QUrl.fromLocalFile(ALERT_PATH))
 
+        # System tray (X button hides here when close_to_tray is enabled)
+        self.tray = TrayManager(
+            ICON_PATH,
+            on_toggle_visible=self.toggle_window_visibility,
+            on_toggle_pause=self.toggle_pause_timer,
+            on_add_program=self.add_program_mouse,
+            on_remove_program=self.remove_program_mouse,
+            on_quit=self.quit_application,
+        )
+
         self.show()
+        self._apply_container_style()
+        if self.config.docked:
+            self._restore_dock_state()
+
+    def _make_tool_button(self, glyph: str, tooltip: str) -> QPushButton:
+        """Create a small flat icon button for the toolbar."""
+        button = QPushButton(glyph)
+        button.setObjectName("ToolButton")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFixedSize(26, 26)
+        button.setToolTip(tooltip)
+        button.setFont(QFont("Segoe UI Symbol", 11))
+        button.setStyleSheet(
+            """
+            QPushButton#ToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 6px;
+                color: black;
+                padding: 0;
+            }
+            QPushButton#ToolButton:hover {
+                background-color: rgba(0, 0, 0, 30);
+            }
+            QPushButton#ToolButton:checked {
+                background-color: rgba(0, 0, 0, 60);
+            }
+            """
+        )
+        return button
+
+    def _apply_container_style(self) -> None:
+        """Paint the rounded bar background in the active/inactive color."""
+        counting = (
+            self.config.timer_enabled
+            and self.foreground_is_tracked
+            and not self._idle_silent()
+        )
+        color = self.active_color if counting else self.inactive_color
+        if getattr(self, "_bar_color", None) == color:
+            return
+        self._bar_color = color
+        self.container.setStyleSheet(
+            f"QWidget#Container {{ background-color: {color}; border-radius: 9px; }}"
+        )
+
+    def _idle_silent(self) -> bool:
+        """Idle check without side effects (no alert sound)."""
+
+        class LASTINPUTINFO(Structure):
+            _fields_: list = [("cbSize", c_uint), ("dwTime", c_uint)]
+
+        try:
+            info = LASTINPUTINFO()
+            info.cbSize = sizeof(info)
+            windll.user32.GetLastInputInfo(byref(info))
+            ms = windll.kernel32.GetTickCount64() - info.dwTime
+            return ms / 1000 >= self.config.idle_timeout
+        except Exception:
+            return False
 
     def check_active_window(self):
         """Check the currently active window and update tracking state.
@@ -668,29 +790,20 @@ class MainWindow(QMainWindow):
             self.show_alert("Work goal reached!", 3)
 
         # Update UI
-        if not self.config.timer_enabled:
-            if self.windowTitle() != TITLE_PAUSED:
-                self.setWindowTitle(TITLE_PAUSED)
-            # Show border while paused (same as not-working state)
-            if (
-                self.config.show_border_when_not_working
-                and not self.border_windows.isVisible()
-            ):
-                self.border_windows.show()
-        elif not should_count:
-            if self.windowTitle() != TITLE_INACTIVE:
-                self.setWindowTitle(TITLE_INACTIVE)
-            # Show border when not tracking time
+        self._counting = should_count
+        if not should_count:
+            # Show border when paused or not tracking time
             if (
                 self.config.show_border_when_not_working
                 and not self.border_windows.isVisible()
             ):
                 self.border_windows.show()
         else:
-            self.setWindowTitle(TITLE_ACTIVE)
             # Hide border when tracking time
             if self.border_windows.isVisible():
                 self.border_windows.hide()
+        self._apply_container_style()
+        self._update_chrome_text()
         self.update_time_display()
 
     def save_data(self) -> None:
@@ -762,23 +875,10 @@ class MainWindow(QMainWindow):
     def update_time_display(self) -> None:
         """Update the visual representation of tracked time.
 
-        Updates the background color based on tracking state and
-        formats the elapsed time for display. Handles time hiding
-        and clamping to maximum displayable value.
+        Formats the elapsed time for display. Handles time hiding
+        and clamping to maximum displayable value. The bar background
+        color is handled by _apply_container_style.
         """
-        if (
-            self.config.timer_enabled
-            and self.foreground_is_tracked
-            and not self.is_idle()
-        ):
-            self.setStyleSheet(
-                f"QMainWindow#MainWindow {{ background-color: {self.active_color}; }}"
-            )
-        else:
-            self.setStyleSheet(
-                f"QMainWindow#MainWindow {{ background-color: {self.inactive_color}; }}"
-            )
-
         # Don't update text if we're showing a message
         if self.showing_message:
             return
@@ -866,6 +966,13 @@ class MainWindow(QMainWindow):
         toggle_border.setChecked(self.config.show_border_when_not_working)
         toggle_border.triggered.connect(self.toggle_border_indicator)
 
+        tray_available = self.tray is not None and self.tray.available
+        toggle_tray = self.menu.addAction("Close button hides to tray")
+        toggle_tray.setCheckable(True)
+        toggle_tray.setChecked(self.config.close_to_tray)
+        toggle_tray.setEnabled(tray_available)
+        toggle_tray.triggered.connect(self.toggle_close_to_tray)
+
         self.menu.addSeparator()
 
         # Timer history submenu
@@ -897,6 +1004,12 @@ class MainWindow(QMainWindow):
         """
         is_enabled = self.config.toggle_timer_enabled()
 
+        # Keep quick-access button and tray menu in sync
+        if self.pause_btn is not None:
+            self.pause_btn.setChecked(not self.config.timer_enabled)
+        if self.tray is not None:
+            self.tray.set_pause_label(not self.config.timer_enabled)
+
         if is_enabled:
             self.show_message("resumed")
             # Hide border immediately if we are now actively tracking
@@ -919,6 +1032,177 @@ class MainWindow(QMainWindow):
                 self.border_windows.show()
 
         self.update_time_display()
+
+    def on_dock_clicked(self) -> None:
+        """Collapse the window to the nearest screen edge or restore it."""
+        if self._docked_animating:
+            return
+        if self._docked:
+            self._undock()
+        else:
+            self._dock()
+
+    def _screen_availability(self) -> QRect:
+        """Available geometry of the screen currently holding the window."""
+        screen = (
+            QGuiApplication.screenAt(self.frameGeometry().center())
+            or QGuiApplication.primaryScreen()
+        )
+        return screen.availableGeometry()
+
+    def _dock(self) -> None:
+        """Slide the window off the nearest horizontal edge, leaving a tab."""
+        avail = self._screen_availability()
+        center_x = self.frameGeometry().center().x()
+        edge = (
+            "right"
+            if (avail.right() - center_x) <= (center_x - avail.left())
+            else "left"
+        )
+        self._dock_edge = edge
+        self._pre_dock_pos = self.pos()
+        self._move_chevron(edge)
+        target_x = (
+            avail.right() + 1 - DOCK_STRIP_WIDTH
+            if edge == "right"
+            else avail.left() - (self.width() - DOCK_STRIP_WIDTH)
+        )
+        self._animate_to(QPoint(target_x, self.pos().y()), docked=True, edge=edge)
+        self.dock_btn.setText("❮")
+        self.dock_btn.setToolTip("Show DevOTime")
+
+    def _undock(self) -> None:
+        """Slide the window back on screen."""
+        avail = self._screen_availability()
+        edge = self._dock_edge
+        if self._pre_dock_pos is not None:
+            end = QPoint(self._pre_dock_pos)
+        else:
+            x = (
+                avail.right() - self.width() - 8
+                if edge == "right"
+                else avail.left() + 8
+            )
+            end = QPoint(x, avail.bottom() - self.height() - 8)
+        self._animate_to(end, docked=False, edge=edge)
+        self.dock_btn.setText("❯" if edge == "right" else "❮")
+        self.dock_btn.setToolTip("Hide to screen edge")
+
+    def _restore_dock_state(self) -> None:
+        """Re-apply the persisted docked state instantly at startup."""
+        self._dock_edge = self.config.dock_edge
+        self._pre_dock_pos = None
+        self._move_chevron(self._dock_edge)
+        avail = self._screen_availability()
+        target_x = (
+            avail.right() + 1 - DOCK_STRIP_WIDTH
+            if self._dock_edge == "right"
+            else avail.left() - (self.width() - DOCK_STRIP_WIDTH)
+        )
+        self.move(target_x, self.pos().y())
+        self._docked = True
+        self.dock_btn.setText("❮" if self._dock_edge == "right" else "❯")
+        self.dock_btn.setToolTip("Show DevOTime")
+
+    def _move_chevron(self, edge: str) -> None:
+        """Put the dock chevron on the screen edge that stays visible."""
+        layout = self.container.layout()
+        layout.removeWidget(self.dock_btn)
+        if edge == "right":
+            layout.insertWidget(0, self.dock_btn)
+        else:
+            layout.addWidget(self.dock_btn)
+
+    def _animate_to(self, end: QPoint, docked: bool, edge: str) -> None:
+        """Animate the window to a position and persist the dock state."""
+        self._docked_animating = True
+        anim = QPropertyAnimation(self, b"pos", self)
+        anim.setDuration(160)
+        anim.setStartValue(self.pos())
+        anim.setEndValue(end)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        def on_finished() -> None:
+            self._docked = docked
+            self._docked_animating = False
+            self.config.set_dock_state(docked, edge)
+
+        anim.finished.connect(on_finished)
+        self._dock_anim = anim
+        anim.start()
+
+    def toggle_window_visibility(self) -> None:
+        """Show or hide the main window (tray double-click / menu)."""
+        if self.isVisible():
+            self.save_data()
+            self.hide()
+            self._show_tray_hint_once()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+    def _show_tray_hint_once(self) -> None:
+        """Explain tray behavior the first time the window hides."""
+        if self.tray is not None and not self.config.tray_hint_shown:
+            self.tray.show_message(
+                APP_NAME,
+                "Still running in the tray. Timer keeps counting. "
+                "Use the tray icon menu to quit.",
+            )
+            self.config.set_tray_hint_shown()
+
+    def quit_application(self) -> None:
+        """Save everything and exit (tray menu Quit)."""
+        self._cleanup_for_exit()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
+    def _update_chrome_text(self) -> None:
+        """Refresh the taskbar title and tray tooltip with the live timer.
+
+        Only pushes a change when the visible text actually differs,
+        avoiding taskbar repaint flicker on every 200ms tick.
+        """
+        total = self.elapsed_seconds
+        if self.active_timer.isValid():
+            total += self.active_timer.nsecsElapsed() / 1e9
+        max_time = 99 * 3600 + 59 * 60 + 59
+        total = min(total, max_time)
+
+        if self.hide_time:
+            time_text = "--:--:--"
+        else:
+            h, m, s = self.convert_seconds_to_hms(total)
+            time_text = f"{h:02}:{m:02}:{s:02}"
+
+        if not self.config.timer_enabled:
+            symbol = "⏸"
+        elif self._counting:
+            symbol = "●"
+        else:
+            symbol = "○"
+
+        text = f"{symbol} {time_text}  {APP_NAME}"
+        if text != self._chrome_text:
+            self._chrome_text = text
+            self.setWindowTitle(text)
+            if self.tray is not None:
+                self.tray.set_tooltip(f"{APP_NAME}  {time_text}")
+
+        # While hidden, the tray icon itself acts as a taskbar clock
+        if self.tray is not None and self.tray.available:
+            if self.isVisible():
+                self.tray.set_normal_icon()
+            else:
+                if not self.config.timer_enabled:
+                    state = "paused"
+                elif self._counting:
+                    state = "counting"
+                else:
+                    state = "inactive"
+                self.tray.set_text_icon(time_text, self._tray_text_colors[state])
 
     def toggle_border_indicator(self) -> None:
         """Toggle the display of border indicators.
@@ -1315,7 +1599,7 @@ class MainWindow(QMainWindow):
         else:
             self.show_message("snd off")
 
-    def checkbox_was_toggled(self, checked: bool) -> None:
+    def hide_time_toggled(self, checked: bool) -> None:
         """Updates the time visibility setting and refreshes the display."""
         self.hide_time: bool = checked
         self.update_time_display()
@@ -1409,17 +1693,36 @@ class MainWindow(QMainWindow):
                     self.hotkeys.unregister_all()
             except Exception:
                 pass
+            try:
+                if getattr(self, "tray", None) is not None:
+                    self.tray.destroy()
+            except Exception:
+                pass
+
+    def toggle_close_to_tray(self) -> None:
+        """Toggle whether the X button hides the window to the tray."""
+        is_enabled = self.config.toggle_close_to_tray()
+        self.show_message("tray on" if is_enabled else "tray off")
 
     def closeEvent(self, event: QEvent) -> None:
         """Handle window close events.
 
-        Performs cleanup operations when the application is closing:
+        With close-to-tray enabled (default) the X button hides the window
+        to the system tray and the timer keeps running; the app is only
+        quit from the tray menu. Otherwise this performs the full cleanup
+        and quits:
         - Saves current session to history
         - Destroys border windows so none stay visible
-        - Unhooks all global hotkeys
+        - Removes the tray icon and unregisters global hotkeys
         - Saves current application state to settings
-        - Quits the QApplication so the process actually exits
         """
+        if self.config.close_to_tray and self.tray is not None and self.tray.available:
+            event.ignore()
+            self.save_data()
+            self.hide()
+            self._show_tray_hint_once()
+            return
+
         self._cleanup_for_exit()
         try:
             event.accept()
@@ -1439,10 +1742,10 @@ def main() -> int:
     app.setApplicationDisplayName(APP_NAME)
     app.setOrganizationName(APP_NAME)
     app.setWindowIcon(QIcon(ICON_PATH))
-    # Ensure the process exits when the last window closes. Border windows
-    # are Tool windows that must be destroyed on exit (see _cleanup_for_exit),
-    # otherwise they keep the event loop alive.
-    app.setQuitOnLastWindowClosed(True)
+    # Quitting is explicit (tray menu / close-to-tray disabled / crash),
+    # never "last window closed": while hidden to the tray, closing a
+    # dialog must not be mistaken for the last window closing.
+    app.setQuitOnLastWindowClosed(False)
 
     window = MainWindow()
     sys.excepthook = window.handle_exception

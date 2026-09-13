@@ -13,12 +13,19 @@ This program is inspired by the AutoHotkey script by Lemon Demon (Neil Cicierega
 
 - **Automatic Time Tracking**: Only tracks time when you're actively working in designated programs
 - **Idle Detection**: Pauses tracking when the system is idle beyond a configurable timeout
+- **Pause Anytime**: Quick pause button on the bar (and in menu/tray) when you don't want to track
 - **Visual Indicators**: Color-coded interface (cyan for active, red for inactive) with optional border alerts
+- **Edge Dock**: Collapse the timer to a slim tab on either screen edge, click the chevron to bring it back
+- **System Tray**: X hides to the tray with the timer still running; double-click the icon to restore.
+  While hidden, the tray icon itself displays the live timer like a clock (wider icon, color shows
+  state: cyan counting, red inactive, amber paused). If the icon lands in the hidden-icons overflow,
+  enable it under Settings → Personalization → Taskbar → "Other system tray icons".
+- **Taskbar Timer**: Live HH:MM:SS in the taskbar with status marks (● counting, ⏸ paused, ○ idle)
 - **Goal Setting**: Set daily work goals with notifications when reached
 - **Customizable Shortcuts**: Configure global hotkeys for adding/removing programs
 - **Audio Alerts**: Optional sound notifications for idle states
 - **Time Management**: Save, restore, and manually adjust tracked time
-- **Persistent Settings**: Remembers window position, tracked programs, and preferences
+- **Persistent Settings**: Remembers window position, dock state, tracked programs, and preferences
 
 ## Installation
 
@@ -36,10 +43,17 @@ If you'd like to build it from source, you can follow these steps:
 ### Interface Overview
 
 The application displays as a compact timer window that stays on top of other windows. The interface shows:
+- **Dock Chevron (❯/❮)**: Collapse the window to the nearest screen edge / restore it
+- **Pause Button (⏸)**: Pause or resume time tracking instantly
+- **Add Button (+)**: Click it, then click the program window you want to track
 - **Time Display**: Current tracked time in HH:MM:SS format
 - **MENU Button**: Access to all settings and options
-- **Hide Checkbox**: Toggle to hide/show the time display
+- **Hide Toggle (◉)**: Toggle to hide/show the time display
 - **Color Coding**: Cyan background when actively tracking, red when inactive
+
+The X button hides the app to the system tray (timer keeps running) — quit from the tray icon's
+menu. Double-click the tray icon to show the window again. Use the "Close button hides to tray"
+menu option if you'd rather X quit the app.
 
 ### Default Global Hotkeys
 
@@ -50,6 +64,7 @@ The application displays as a compact timer window that stays on top of other wi
 
 - **Add/Remove Programs**: Manage which programs are tracked
 - **Pause Timer**: Pause/resume time tracking when you don't want to use it
+- **Close Button Hides to Tray**: Toggle X behavior (tray vs quit)
 - **Timeout Settings**: Configure idle timeout
 - **Goal Time**: Set daily work goals with HH:MM:SS format
 - **Hotkey Configuration**: Customize global shortcuts
