@@ -10,7 +10,7 @@ in the taskbar itself.
 import ctypes
 from ctypes import wintypes
 
-from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PyQt6.QtWidgets import QWidget
 
@@ -54,8 +54,9 @@ class TaskbarClockStrip(QWidget):
 
         self._text = ""
         self._last_rect: tuple[int, int, int, int] | None = None
-        self._apply_font(14)
-        self.setFixedSize(96, 48)
+        self._max_width = 96
+        self._apply_font(48)
+        self.setFixedSize(self._max_width, 48)
 
     # -- display ---------------------------------------------------------------
     def _apply_font(self, taskbar_height: int) -> None:
@@ -66,18 +67,17 @@ class TaskbarClockStrip(QWidget):
         self._font = QFont("Segoe UI")
         self._font.setPixelSize(size)
         self._font.setBold(True)
+        # Fixed width sized for the widest possible text, so per-second
+        # updates never resize or reposition the window (flicker source).
+        self._max_width = (
+            QFontMetrics(self._font).horizontalAdvance("00:00:00") + self.PADDING * 2
+        )
 
     def set_display(self, text: str) -> None:
-        """Update the shown timer text and reflow if the width changed."""
+        """Update the shown timer text (repaint only, never resize)."""
         if text == self._text:
             return
         self._text = text
-        fm = QFontMetrics(self._font)
-        width = fm.horizontalAdvance(text) + self.PADDING * 2
-        if self.width() != width:
-            height = self.height() or 48
-            self.setFixedSize(width, height)
-            self.ensure_position()
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -89,8 +89,12 @@ class TaskbarClockStrip(QWidget):
         painter.end()
 
     # -- placement ---------------------------------------------------------------
-    def ensure_position(self) -> bool:
+    def ensure_position(self, reassert_topmost: bool = False) -> bool:
         """Glue the strip to the taskbar left of the notification area.
+
+        Args:
+            reassert_topmost: Force the topmost z-order refresh even when
+                the geometry did not change (periodic keep-alive)
 
         Returns:
             True when the strip is placed on a visible taskbar.
@@ -111,10 +115,11 @@ class TaskbarClockStrip(QWidget):
         bottom_taskbar = tb_w >= tb_h
 
         self._apply_font(tb_h if bottom_taskbar else tb_w)
+        width = self._max_width
 
         if bottom_taskbar:
             right_edge = (nt.left if notify else tb.right) - self.GAP
-            x = right_edge - self.width()
+            x = right_edge - width
             y, height = tb.top, tb_h
         else:
             # Vertical taskbar on the left/right edge
@@ -126,20 +131,24 @@ class TaskbarClockStrip(QWidget):
             y = max(tb.top, top_edge - self.height())
             height = tb_w
 
-        if self.height() != height:
-            self.setFixedSize(self.width(), height)
+        if self.size() != QSize(width, height):
+            self.setFixedSize(width, height)
 
-        rect = (x, y, self.width(), height)
+        rect = (x, y, width, height)
         if rect != self._last_rect:
             self._last_rect = rect
             self.move(x, y)
+            self._reassert_topmost()
+        elif reassert_topmost:
+            self._reassert_topmost()
         if not self.isVisible():
             self.show()
-        # Re-assert topmost so the strip stays painted over the taskbar
-        # (the shell reclaims the top of the topmost band on focus moves)
+        return True
+
+    def _reassert_topmost(self) -> None:
+        """Re-assert the topmost z-order so the strip stays above the taskbar."""
         hwnd = int(self.winId())
         user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0002 | 0x0001 | 0x0010)
-        return True
 
     # -- interaction -------------------------------------------------------------
     def mousePressEvent(self, event) -> None:

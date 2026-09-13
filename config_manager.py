@@ -66,9 +66,6 @@ class ConfigManager:
         self.timer_enabled: bool = self.settings.value(
             "timer_enabled", True, type=bool
         )
-        self.close_to_tray: bool = self.settings.value(
-            "close_to_tray", True, type=bool
-        )
         self.tray_hint_shown: bool = self.settings.value(
             "tray_hint_shown", False, type=bool
         )
@@ -80,6 +77,7 @@ class ConfigManager:
         self.docked: bool = self.settings.value("docked", False, type=bool)
         dock_edge = self.settings.value("dock_edge", "right")
         self.dock_edge: str = dock_edge if dock_edge in ("left", "right") else "right"
+        self.dock_pos: tuple[int, int] | None = self._load_dock_pos()
 
         # Load hotkeys
         self.add_program_hotkey: str = self.settings.value(
@@ -96,6 +94,17 @@ class ConfigManager:
 
         # Load time history
         self.time_history: list[int] = self._load_time_history()
+
+    def _load_dock_pos(self) -> tuple[int, int] | None:
+        """Load the saved pre-dock window position as (x, y)."""
+        raw = self.settings.value("dock_pos", "")
+        if isinstance(raw, str) and "," in raw:
+            try:
+                x_str, y_str = raw.split(",", 1)
+                return (int(x_str), int(y_str))
+            except ValueError:
+                return None
+        return None
 
     def _load_tracked_programs(self) -> dict[str, str]:
         """Load the tracked programs list from settings.
@@ -201,15 +210,15 @@ class ConfigManager:
         self.settings.setValue("Options/timer_enabled", self.timer_enabled)
         return self.timer_enabled
 
-    def toggle_close_to_tray(self) -> bool:
-        """Toggle the close-to-tray setting.
+    def set_dock_pos(self, x: int, y: int) -> None:
+        """Persist the pre-dock window position.
 
-        Returns:
-            The new state of the setting
+        Args:
+            x: Window x position before docking
+            y: Window y position before docking
         """
-        self.close_to_tray = not self.close_to_tray
-        self.settings.setValue("Options/close_to_tray", self.close_to_tray)
-        return self.close_to_tray
+        self.dock_pos = (x, y)
+        self.settings.setValue("Options/dock_pos", f"{x},{y}")
 
     def toggle_taskbar_clock(self) -> bool:
         """Toggle the taskbar clock strip setting.
