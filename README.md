@@ -20,7 +20,11 @@ This program is inspired by the AutoHotkey script by Lemon Demon (Neil Cicierega
   While hidden, the tray icon itself displays the live timer like a clock (wider icon, color shows
   state: cyan counting, red inactive, amber paused). If the icon lands in the hidden-icons overflow,
   enable it under Settings → Personalization → Taskbar → "Other system tray icons".
-- **Taskbar Timer**: Live HH:MM:SS in the taskbar with status marks (● counting, ⏸ paused, ○ idle)
+- **Taskbar Timer Strip**: a live HH:MM:SS rendered right inside the taskbar, just left of the tray
+  area — full-size and always readable (tray icons are capped at 16px). Color shows state: cyan
+  counting, red inactive, amber paused. Click it to bring the window back, right-click for the menu.
+  Toggle in MENU → "Taskbar timer strip".
+- **Taskbar Title**: live HH:MM:SS in the window/taskbar button with status marks (● counting, ⏸ paused, ○ idle)
 - **Goal Setting**: Set daily work goals with notifications when reached
 - **Customizable Shortcuts**: Configure global hotkeys for adding/removing programs
 - **Audio Alerts**: Optional sound notifications for idle states

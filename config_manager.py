@@ -72,6 +72,9 @@ class ConfigManager:
         self.tray_hint_shown: bool = self.settings.value(
             "tray_hint_shown", False, type=bool
         )
+        self.show_taskbar_clock: bool = self.settings.value(
+            "show_taskbar_clock", True, type=bool
+        )
 
         # Dock (edge-collapse) state
         self.docked: bool = self.settings.value("docked", False, type=bool)
@@ -207,6 +210,16 @@ class ConfigManager:
         self.close_to_tray = not self.close_to_tray
         self.settings.setValue("Options/close_to_tray", self.close_to_tray)
         return self.close_to_tray
+
+    def toggle_taskbar_clock(self) -> bool:
+        """Toggle the taskbar clock strip setting.
+
+        Returns:
+            The new state of the setting
+        """
+        self.show_taskbar_clock = not self.show_taskbar_clock
+        self.settings.setValue("Options/show_taskbar_clock", self.show_taskbar_clock)
+        return self.show_taskbar_clock
 
     def set_tray_hint_shown(self) -> None:
         """Record that the tray balloon hint has been shown once."""

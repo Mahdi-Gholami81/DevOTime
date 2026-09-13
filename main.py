@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
 from border_windows import BorderWindows
 from config_manager import ConfigManager
 from hotkey_manager import HotkeyManager
+from taskbar_clock import TaskbarClockStrip
 from tray_manager import TrayManager
 import resources_rc
 
@@ -537,6 +538,14 @@ class MainWindow(QMainWindow):
         # Detect if system is in dark mode
         app = QGuiApplication.instance()
         is_dark_mode = app.styleHints().colorScheme() == Qt.ColorScheme.Dark
+        self._is_dark_mode = is_dark_mode
+        # Taskbar keeps a dark background on Windows 11 even with light
+        # apps, so the strip uses bright colors readable on both themes
+        self._taskbar_text_colors = {
+            "counting": "#8FE9E9",
+            "inactive": "#F28080",
+            "paused": "#F0CE6E",
+        }
         self._tray_text_colors = (
             {"counting": "#B0FFFF", "inactive": "#F07070", "paused": "#E8C55A"}
             if is_dark_mode
@@ -674,6 +683,17 @@ class MainWindow(QMainWindow):
             on_quit=self.quit_application,
         )
 
+        # Live timer strip inside the taskbar, left of the tray area
+        self.taskbar_clock: TaskbarClockStrip | None = None
+        self._pos_tick = 0
+        if self.config.show_taskbar_clock:
+            self.taskbar_clock = TaskbarClockStrip(
+                on_left_click=self._clock_clicked,
+                on_right_click=self._popup_tray_menu,
+                dark_taskbar=is_dark_mode,
+            )
+            self.taskbar_clock.ensure_position()
+
         self.show()
         self._apply_container_style()
         if self.config.docked:
@@ -804,6 +824,13 @@ class MainWindow(QMainWindow):
                 self.border_windows.hide()
         self._apply_container_style()
         self._update_chrome_text()
+        self._pos_tick += 1
+        if (
+            self._pos_tick % 5 == 0
+            and self.taskbar_clock is not None
+            and self.config.show_taskbar_clock
+        ):
+            self.taskbar_clock.ensure_position()
         self.update_time_display()
 
     def save_data(self) -> None:
@@ -972,6 +999,11 @@ class MainWindow(QMainWindow):
         toggle_tray.setChecked(self.config.close_to_tray)
         toggle_tray.setEnabled(tray_available)
         toggle_tray.triggered.connect(self.toggle_close_to_tray)
+
+        toggle_clock = self.menu.addAction("Taskbar timer strip")
+        toggle_clock.setCheckable(True)
+        toggle_clock.setChecked(self.config.show_taskbar_clock)
+        toggle_clock.triggered.connect(self.toggle_taskbar_clock)
 
         self.menu.addSeparator()
 
@@ -1191,18 +1223,50 @@ class MainWindow(QMainWindow):
             if self.tray is not None:
                 self.tray.set_tooltip(f"{APP_NAME}  {time_text}")
 
-        # While hidden, the tray icon itself acts as a taskbar clock
+        # Timer strip lives in the taskbar; tray keeps the plain icon
         if self.tray is not None and self.tray.available:
-            if self.isVisible():
-                self.tray.set_normal_icon()
+            self.tray.set_normal_icon()
+
+        if self.taskbar_clock is not None:
+            if not self.config.timer_enabled:
+                state = "paused"
+            elif self._counting:
+                state = "counting"
             else:
-                if not self.config.timer_enabled:
-                    state = "paused"
-                elif self._counting:
-                    state = "counting"
-                else:
-                    state = "inactive"
-                self.tray.set_text_icon(time_text, self._tray_text_colors[state])
+                state = "inactive"
+            self.taskbar_clock.text_color = self._taskbar_text_colors[state]
+            self.taskbar_clock.set_display(time_text)
+
+    def _clock_clicked(self) -> None:
+        """Left click on the taskbar strip: bring the timer window up."""
+        if not self.isVisible():
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _popup_tray_menu(self) -> None:
+        """Right click on the taskbar strip: same menu as the tray icon."""
+        if self.tray is not None and self.tray.available:
+            from PyQt6.QtGui import QCursor
+
+            self.tray.menu.exec(QCursor.pos())
+
+    def toggle_taskbar_clock(self) -> None:
+        """Show/hide the taskbar timer strip."""
+        is_enabled = self.config.toggle_taskbar_clock()
+        if is_enabled:
+            if self.taskbar_clock is None:
+                self.taskbar_clock = TaskbarClockStrip(
+                    on_left_click=self._clock_clicked,
+                    on_right_click=self._popup_tray_menu,
+                    dark_taskbar=self._is_dark_mode,
+                )
+            self.taskbar_clock.ensure_position()
+            self.show_message("tb clk on")
+        else:
+            if self.taskbar_clock is not None:
+                self.taskbar_clock.hide()
+            self.show_message("tb clk off")
 
     def toggle_border_indicator(self) -> None:
         """Toggle the display of border indicators.
@@ -1696,6 +1760,13 @@ class MainWindow(QMainWindow):
             try:
                 if getattr(self, "tray", None) is not None:
                     self.tray.destroy()
+            except Exception:
+                pass
+            try:
+                if getattr(self, "taskbar_clock", None) is not None:
+                    self.taskbar_clock.close()
+                    self.taskbar_clock.deleteLater()
+                    self.taskbar_clock = None
             except Exception:
                 pass
 
